@@ -39,6 +39,8 @@ const mock = [
   },
 ];
 
+let nextTicketId = Math.max(0, ...mock.map((ticket) => ticket.id)) + 1;
+
 app.get("/health", async (req: Request, res: Response) => {
   res.status(200).json({
     status: "ok",
@@ -67,10 +69,62 @@ app.get("/tickets/:id", async (req: Request, res: Response) => {
   });
 });
 
-app.post("/echo", async (req: Request, res: Response) => {
-  const data = req.body;
+app.post("/tickets", async (req: Request, res: Response) => {
+  const data = {
+    title: req.body.title,
+    description: req.body.description,
+    id: nextTicketId,
+    status: "OPEN",
+    createdAt: new Date().toString(),
+  };
 
-  res.status(200).json(data);
+  mock.push(data);
+  nextTicketId += 1;
+
+  res.status(201).json({
+    message: "Ticket created successfully",
+    data,
+  });
+});
+
+app.delete("/tickets/:id", async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const foundTicketIndex = mock.findIndex((item) => item.id === +id);
+
+  const statusCode = foundTicketIndex !== -1 ? 200 : 404;
+
+  if (foundTicketIndex !== -1) {
+    mock.splice(foundTicketIndex, 1);
+  }
+
+  res.status(statusCode).json({
+    message:
+      foundTicketIndex !== -1
+        ? "Ticket deleted successfully!"
+        : "Ticket not found!",
+  });
+});
+
+app.patch("/tickets/:id", async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  const foundTicket = mock.find((item) => item.id === +id);
+
+  if (foundTicket && "title" in req.body) {
+    foundTicket.title = req.body.title;
+  }
+
+  if (foundTicket && "description" in req.body) {
+    foundTicket.description = req.body.description;
+  }
+
+  const statusCode = foundTicket ? 200 : 404;
+
+  res.status(statusCode).json({
+    message: foundTicket ? "Ticket updated successfully!" : "Ticket not found!",
+    data: foundTicket ?? null,
+  });
 });
 
 app.listen(5000);
