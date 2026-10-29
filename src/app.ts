@@ -4,47 +4,22 @@ import express, {
   type Request,
   type Response,
 } from "express";
+import pg from "pg";
+
+const { Pool } = pg;
+const ticketColumns =
+  'id, title, description, status, created_at AS "createdAt"';
+
+const pool = new Pool();
+
+pool.on("error", (err, client) => {
+  console.error("Unexpected error on idle client", err);
+  process.exit(-1);
+});
 
 const app: Express = express();
 
 app.use(express.json());
-
-const mock = [
-  {
-    id: 1,
-    title: "مشکل در ورود به حساب کاربری",
-    description:
-      "هنگام ورود به حساب کاربری با خطای نامعتبر بودن اطلاعات مواجه می‌شوم.",
-    status: "OPEN",
-    createdAt: "2026-10-20T09:30:00.000Z",
-  },
-  {
-    id: 2,
-    title: "عدم نمایش اطلاعات پروفایل",
-    description:
-      "پس از بروزرسانی اطلاعات حساب، تغییرات جدید در صفحه پروفایل نمایش داده نمی‌شوند.",
-    status: "OPEN",
-    createdAt: "2026-10-21T14:15:00.000Z",
-  },
-  {
-    id: 3,
-    title: "درخواست افزودن قابلیت اعلان‌ها",
-    description:
-      "لطفاً امکان دریافت اعلان هنگام پاسخگویی به تیکت‌ها را اضافه کنید.",
-    status: "OPEN",
-    createdAt: "2026-10-23T11:45:00.000Z",
-  },
-  {
-    id: 4,
-    title: "خطا در بارگذاری فایل پیوست",
-    description:
-      "هنگام آپلود فایل PDF در بخش پشتیبانی، عملیات با خطای سرور متوقف می‌شود.",
-    status: "OPEN",
-    createdAt: "2026-10-25T16:20:00.000Z",
-  },
-];
-
-let nextTicketId = Math.max(0, ...mock.map((ticket) => ticket.id)) + 1;
 
 const isValidParam = async (
   req: Request,
@@ -54,7 +29,9 @@ const isValidParam = async (
   const id = req.params.id;
 
   const numericId = Number(id);
-  const invalidParam = !Number.isInteger(numericId) || numericId <= 0;
+  // ticket.id uses PostgreSQL INTEGER (SERIAL).
+  const invalidParam =
+    !Number.isInteger(numericId) || numericId <= 0 || numericId > 2_147_483_647;
 
   if (invalidParam) {
     return res.status(400).json({
@@ -89,9 +66,10 @@ app.get("/health", async (req: Request, res: Response) => {
 });
 
 app.get("/tickets", async (req: Request, res: Response) => {
-  let data = mock;
-
-  res.status(200).json(data);
+  const result = await pool.query(
+    `SELECT ${ticketColumns} FROM ticket ORDER BY id ASC`,
+  );
+  res.status(200).json(result.rows);
 });
 
 app.get("/tickets/:id", isValidParam, async (req: Request, res: Response) => {
@@ -100,7 +78,11 @@ app.get("/tickets/:id", isValidParam, async (req: Request, res: Response) => {
   console.log(req.params);
   console.log(req.query);
 
-  const foundTicket = mock.find((item) => item.id === +id);
+  const result = await pool.query(
+    `SELECT ${ticketColumns} FROM ticket WHERE id = $1`,
+    [Number(id)],
+  );
+  const foundTicket = result.rows[0];
 
   const statusCode = foundTicket ? 200 : 404;
 
@@ -145,20 +127,14 @@ app.post("/tickets", isValidBody, async (req: Request, res: Response) => {
     });
   }
 
-  const data = {
-    title: req.body.title,
-    description: req.body.description,
-    id: nextTicketId,
-    status: "OPEN",
-    createdAt: new Date().toString(),
-  };
-
-  mock.push(data);
-  nextTicketId += 1;
+  const result = await pool.query(
+    `INSERT INTO ticket (title, description) VALUES ($1, $2) RETURNING ${ticketColumns}`,
+    [title.trim(), description],
+  );
 
   res.status(201).json({
     message: "Ticket created successfully",
-    data,
+    data: result.rows[0],
   });
 });
 
@@ -168,17 +144,16 @@ app.delete(
   async (req: Request, res: Response) => {
     const { id } = req.params;
 
-    const foundTicketIndex = mock.findIndex((item) => item.id === +id);
+    const result = await pool.query("DELETE FROM ticket WHERE id = $1", [
+      Number(id),
+    ]);
+    const deleted = result.rowCount === 1;
 
-    const statusCode = foundTicketIndex !== -1 ? 200 : 404;
-
-    if (foundTicketIndex !== -1) {
-      mock.splice(foundTicketIndex, 1);
-    }
+    const statusCode = deleted ? 200 : 404;
 
     res.status(statusCode).json({
       message:
-        foundTicketIndex !== -1
+        deleted
           ? "Ticket deleted successfully!"
           : "Ticket not found!",
       data: null,
@@ -230,15 +205,19 @@ app.patch(
       }
     }
 
-    const foundTicket = mock.find((item) => item.id === +id);
-
-    if (foundTicket && "title" in body) {
-      foundTicket.title = body.title;
-    }
-
-    if (foundTicket && "description" in body) {
-      foundTicket.description = body.description;
-    }
+    const result = await pool.query(
+      `UPDATE ticket
+       SET title = COALESCE($2, title),
+           description = COALESCE($3, description)
+       WHERE id = $1
+       RETURNING ${ticketColumns}`,
+      [
+        Number(id),
+        "title" in body ? body.title.trim() : null,
+        "description" in body ? body.description : null,
+      ],
+    );
+    const foundTicket = result.rows[0];
 
     const statusCode = foundTicket ? 200 : 404;
 
@@ -254,6 +233,7 @@ app.patch(
 type AppError = Error & {
   type?: string;
   status?: number;
+  code?: string;
 };
 
 app.use((err: AppError, req: Request, res: Response, next: NextFunction) => {
@@ -267,6 +247,13 @@ app.use((err: AppError, req: Request, res: Response, next: NextFunction) => {
   if (err.status === 413) {
     return res.status(413).json({
       message: "Request size is too long",
+      data: null,
+    });
+  }
+
+  if (err.code === "23514" || err.code === "22001") {
+    return res.status(400).json({
+      message: "Validation failed",
       data: null,
     });
   }
