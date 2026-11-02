@@ -4,18 +4,8 @@ import express, {
   type Request,
   type Response,
 } from "express";
-import pg from "pg";
-
-const { Pool } = pg;
-const ticketColumns =
-  'id, title, description, status, created_at AS "createdAt"';
-
-const pool = new Pool();
-
-pool.on("error", (err, client) => {
-  console.error("Unexpected error on idle client", err);
-  process.exit(-1);
-});
+import { Prisma } from "./generated/prisma/client.ts";
+import { prisma } from "./lib/prisma.ts";
 
 const app: Express = express();
 
@@ -66,29 +56,28 @@ app.get("/health", async (req: Request, res: Response) => {
 });
 
 app.get("/tickets", async (req: Request, res: Response) => {
-  const result = await pool.query(
-    `SELECT ${ticketColumns} FROM ticket ORDER BY id ASC`,
-  );
-  res.status(200).json(result.rows);
+  const result = await prisma.ticket.findMany({
+    orderBy: {
+      id: "asc",
+    },
+  });
+  res.status(200).json(result);
 });
 
 app.get("/tickets/:id", isValidParam, async (req: Request, res: Response) => {
   const { id } = req.params;
 
-  console.log(req.params);
-  console.log(req.query);
+  const result = await prisma.ticket.findUnique({
+    where: {
+      id: Number(id),
+    },
+  });
 
-  const result = await pool.query(
-    `SELECT ${ticketColumns} FROM ticket WHERE id = $1`,
-    [Number(id)],
-  );
-  const foundTicket = result.rows[0];
-
-  const statusCode = foundTicket ? 200 : 404;
+  const statusCode = result ? 200 : 404;
 
   res.status(statusCode).json({
-    message: foundTicket ? "Ok" : "Ticket not found!",
-    data: foundTicket ?? null,
+    message: result ? "Ok" : "Ticket not found!",
+    data: result ?? null,
   });
 });
 
@@ -111,9 +100,9 @@ app.post("/tickets", isValidBody, async (req: Request, res: Response) => {
 
   const titleLength = title.trim().length;
 
-  if (titleLength < 10 || titleLength > 50) {
+  if (titleLength < 10 || titleLength > 60) {
     return res.status(400).json({
-      message: "Title must be between 10 and 50 characters",
+      message: "Title must be between 10 and 60 characters",
       data: null,
     });
   }
@@ -127,37 +116,49 @@ app.post("/tickets", isValidBody, async (req: Request, res: Response) => {
     });
   }
 
-  const result = await pool.query(
-    `INSERT INTO ticket (title, description) VALUES ($1, $2) RETURNING ${ticketColumns}`,
-    [title.trim(), description],
-  );
+  const result = await prisma.ticket.create({
+    data: {
+      title: title.trim(),
+      description,
+    },
+  });
 
   res.status(201).json({
     message: "Ticket created successfully",
-    data: result.rows[0],
+    data: result,
   });
 });
 
 app.delete(
   "/tickets/:id",
   isValidParam,
-  async (req: Request, res: Response) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     const { id } = req.params;
 
-    const result = await pool.query("DELETE FROM ticket WHERE id = $1", [
-      Number(id),
-    ]);
-    const deleted = result.rowCount === 1;
+    try {
+      await prisma.ticket.delete({
+        where: {
+          id: Number(id),
+        },
+      });
 
-    const statusCode = deleted ? 200 : 404;
+      return res.status(200).json({
+        message: "Ticket deleted successfully!",
+        data: null,
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2025"
+      ) {
+        return res.status(404).json({
+          message: "Ticket not found!",
+          data: null,
+        });
+      }
 
-    res.status(statusCode).json({
-      message:
-        deleted
-          ? "Ticket deleted successfully!"
-          : "Ticket not found!",
-      data: null,
-    });
+      return next(error);
+    }
   },
 );
 
@@ -165,7 +166,7 @@ app.patch(
   "/tickets/:id",
   isValidParam,
   isValidBody,
-  async (req: Request, res: Response) => {
+  async (req: Request, res: Response, next: NextFunction) => {
     const { id } = req.params;
     const body = req.body;
 
@@ -179,9 +180,9 @@ app.patch(
 
       const titleLength = body.title.trim().length;
 
-      if (titleLength < 10 || titleLength > 50) {
+      if (titleLength < 10 || titleLength > 60) {
         return res.status(400).json({
-          message: "Title must be between 10 and 50 characters",
+          message: "Title must be between 10 and 60 characters",
           data: null,
         });
       }
@@ -205,28 +206,41 @@ app.patch(
       }
     }
 
-    const result = await pool.query(
-      `UPDATE ticket
-       SET title = COALESCE($2, title),
-           description = COALESCE($3, description)
-       WHERE id = $1
-       RETURNING ${ticketColumns}`,
-      [
-        Number(id),
-        "title" in body ? body.title.trim() : null,
-        "description" in body ? body.description : null,
-      ],
-    );
-    const foundTicket = result.rows[0];
+    const data: { title?: string; description?: string } = {};
 
-    const statusCode = foundTicket ? 200 : 404;
+    if ("title" in body) {
+      data.title = body.title.trim();
+    }
 
-    res.status(statusCode).json({
-      message: foundTicket
-        ? "Ticket updated successfully!"
-        : "Ticket not found!",
-      data: foundTicket ?? null,
-    });
+    if ("description" in body) {
+      data.description = body.description;
+    }
+
+    try {
+      const updatedTicket = await prisma.ticket.update({
+        data,
+        where: {
+          id: Number(id),
+        },
+      });
+
+      return res.status(200).json({
+        message: "Ticket updated successfully!",
+        data: updatedTicket,
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2025"
+      ) {
+        return res.status(404).json({
+          message: "Ticket not found!",
+          data: null,
+        });
+      }
+
+      return next(error);
+    }
   },
 );
 

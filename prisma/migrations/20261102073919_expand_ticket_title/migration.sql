@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "ticket" ALTER COLUMN "title" SET DATA TYPE VARCHAR(60);

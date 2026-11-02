@@ -1,18 +1,20 @@
-import pg from "pg";
-const { Client } = pg;
+import { prisma } from "./lib/prisma.ts";
 
-const client = new Client();
-await client.connect();
-
-const query = "SELECT * FROM ticket WHERE id = $1";
-const params = ["999"];
-
-try {
-  const res = await client.query(query, params);
-  console.log(res.rows);
-} catch (error) {
-  console.error(error);
-} finally {
-  await client.end();
-  console.info("Connection Closed!");
+async function main() {
+  const ticket = await prisma.ticket.findUnique({
+    where: {
+      id: 20,
+    },
+  });
+  console.log("Ticket:", JSON.stringify(ticket, null, 2));
 }
+
+main()
+  .then(async () => {
+    await prisma.$disconnect();
+  })
+  .catch(async (e) => {
+    console.error(e);
+    await prisma.$disconnect();
+    process.exit(1);
+  });
