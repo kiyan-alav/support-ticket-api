@@ -13,6 +13,7 @@ model User {
   lastName  String    @db.VarChar(50)
   tickets   Ticket[]
   comments  Comment[]
+  operator  Operator?
 
   @@map("user")
 }
@@ -25,6 +26,8 @@ model Ticket {
   createdAt   DateTime      @default(now()) @map("created_at") @db.Timestamp(6)
   user        User?         @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   userId      Int?
+  operator    Operator?     @relation(fields: [operatorId], references: [id], onDelete: Restrict)
+  operatorId  Int?
   comments    Comment[]
 
   @@index([userId])
@@ -39,6 +42,18 @@ model Comment {
   author    User     @relation(fields: [authorId], references: [id], onDelete: Cascade, onUpdate: Cascade)
   authorId  Int
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamp(0)
+
+  @@map("comment")
+}
+
+model Operator {
+  id      Int      @id @default(autoincrement())
+  code    String   @db.VarChar(20)
+  tickets Ticket[]
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId  Int      @unique
+
+  @@map("operator")
 }
 
 enum ticket_status {

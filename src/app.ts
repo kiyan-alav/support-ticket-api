@@ -4,7 +4,7 @@ import express, {
   type Request,
   type Response,
 } from "express";
-import { Prisma } from "./generated/prisma/client.ts";
+import { Prisma, ticket_status } from "./generated/prisma/client.ts";
 import { prisma } from "./lib/prisma.ts";
 
 const app: Express = express();
@@ -255,6 +255,7 @@ app.get("/health", async (req: Request, res: Response) => {
 });
 
 type SortValue = "asc" | "desc";
+
 app.get("/tickets", async (req: Request, res: Response) => {
   const { userId, sort, page, pageSize } = req.query;
   const where: { userId?: number } = {};
@@ -675,6 +676,244 @@ app.delete(
 
       return next(error);
     }
+  },
+);
+
+app.post(
+  "/tickets/:id/claim",
+  isValidParam,
+  isValidBody,
+  async (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const operatorId: unknown = req.body.operatorId;
+
+    if (
+      typeof operatorId !== "number" ||
+      !Number.isInteger(operatorId) ||
+      operatorId <= 0 ||
+      operatorId > 2_147_483_647
+    ) {
+      return res.status(400).json({ message: "Invalid operatorId", data: null });
+    }
+
+    const ticket = await prisma.ticket.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+
+    if (!ticket) {
+      return res.status(404).json({ message: "Ticket not found!", data: null });
+    }
+
+    const operator = await prisma.operator.findUnique({
+      where: { id: operatorId },
+      select: { id: true },
+    });
+
+    if (!operator) {
+      return res
+        .status(404)
+        .json({ message: "Operator not found!", data: null });
+    }
+
+    try {
+      const { count } = await prisma.ticket.updateMany({
+        where: { id, status: ticket_status.OPEN, operatorId: null },
+        data: { status: ticket_status.IN_PROGRESS, operatorId },
+      });
+
+      if (count === 1) {
+        return res.status(204).end();
+      }
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2003"
+      ) {
+        return res
+          .status(404)
+          .json({ message: "Operator not found!", data: null });
+      }
+
+      throw error;
+    }
+
+    const currentTicket = await prisma.ticket.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+
+    if (!currentTicket) {
+      return res.status(404).json({ message: "Ticket not found!", data: null });
+    }
+
+    return res.status(409).json({
+      message: "Ticket is not available to claim",
+      data: null,
+    });
+  },
+);
+
+app.post(
+  "/tickets/:id/transfer",
+  isValidParam,
+  isValidBody,
+  async (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const operatorId: unknown = req.body.operatorId;
+
+    if (
+      typeof operatorId !== "number" ||
+      !Number.isInteger(operatorId) ||
+      operatorId <= 0 ||
+      operatorId > 2_147_483_647
+    ) {
+      return res.status(400).json({ message: "Invalid operatorId", data: null });
+    }
+
+    const ticket = await prisma.ticket.findUnique({
+      where: { id },
+      select: { status: true, operatorId: true },
+    });
+
+    if (!ticket) {
+      return res.status(404).json({ message: "Ticket not found!", data: null });
+    }
+
+    const currentOperatorId = ticket.operatorId;
+    if (
+      ticket.status !== ticket_status.IN_PROGRESS ||
+      currentOperatorId === null
+    ) {
+      return res.status(409).json({
+        message: "Ticket must be in progress and assigned to be transferred",
+        data: null,
+      });
+    }
+
+    if (operatorId === currentOperatorId) {
+      return res.status(409).json({
+        message: "Ticket is already assigned to this operator",
+        data: null,
+      });
+    }
+
+    const operator = await prisma.operator.findUnique({
+      where: { id: operatorId },
+      select: { id: true },
+    });
+
+    if (!operator) {
+      return res
+        .status(404)
+        .json({ message: "Operator not found!", data: null });
+    }
+
+    try {
+      const { count } = await prisma.ticket.updateMany({
+        where: {
+          id,
+          status: ticket_status.IN_PROGRESS,
+          operatorId: currentOperatorId,
+        },
+        data: { operatorId },
+      });
+
+      if (count === 1) {
+        return res.status(204).end();
+      }
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2003"
+      ) {
+        return res
+          .status(404)
+          .json({ message: "Operator not found!", data: null });
+      }
+
+      throw error;
+    }
+
+    const currentTicket = await prisma.ticket.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+
+    if (!currentTicket) {
+      return res.status(404).json({ message: "Ticket not found!", data: null });
+    }
+
+    return res.status(409).json({
+      message: "Ticket status or operator changed before the transfer",
+      data: null,
+    });
+  },
+);
+
+const nextTicketStatus: Record<ticket_status, ticket_status | null> = {
+  OPEN: null,
+  IN_PROGRESS: ticket_status.RESOLVED,
+  RESOLVED: ticket_status.CLOSED,
+  CLOSED: null,
+};
+
+app.patch(
+  "/tickets/:id/status",
+  isValidParam,
+  isValidBody,
+  async (req: Request, res: Response) => {
+    const id = Number(req.params.id);
+    const requestedStatus: unknown = req.body.status;
+
+    const status = Object.values(ticket_status).find(
+      (value) => value === requestedStatus,
+    );
+
+    if (status === undefined) {
+      return res.status(400).json({ message: "Invalid status", data: null });
+    }
+
+    const ticket = await prisma.ticket.findUnique({
+      where: { id },
+      select: { status: true },
+    });
+
+    if (!ticket) {
+      return res.status(404).json({ message: "Ticket not found!", data: null });
+    }
+
+    if (nextTicketStatus[ticket.status] !== status) {
+      return res.status(409).json({
+        message: "Status transition is not allowed",
+        data: null,
+      });
+    }
+
+    const { count } = await prisma.ticket.updateMany({
+      where: { id, status: ticket.status },
+      data: { status },
+    });
+
+    if (count === 0) {
+      const currentTicket = await prisma.ticket.findUnique({
+        where: { id },
+        select: { id: true },
+      });
+
+      if (!currentTicket) {
+        return res
+          .status(404)
+          .json({ message: "Ticket not found!", data: null });
+      }
+
+      return res.status(409).json({
+        message: "Ticket status changed before the update",
+        data: null,
+      });
+    }
+
+    return res.status(204).end();
   },
 );
 
